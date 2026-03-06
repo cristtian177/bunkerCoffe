@@ -1,0 +1,225 @@
+// ============================================
+// COFFEE BUNKER - Sistema de Cafetería Fitness
+// Database: SQLite (local) via Prisma ORM
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./coffee_bunker.db"
+}
+
+// ============================================
+// USUARIOS Y ROLES
+// ============================================
+
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  username  String   @unique
+  password  String   // hash bcrypt
+  role      String   @default("OPERATOR") // ADMIN | OPERATOR
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relaciones
+  sales         Sale[]
+  cashRegisters CashRegister[]
+
+  @@map("users")
+}
+
+// ============================================
+// CATEGORÍAS
+// ============================================
+
+model Category {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique // "Batidos", "Desayunos", "Bebidas", "Snacks"
+  type      String   // DIRECT | COMPOSITE (para saber si los productos son directos o compuestos)
+  color     String?  // color hex para UI del POS
+  icon      String?  // nombre del icono para UI
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  products Product[]
+
+  @@map("categories")
+}
+
+// ============================================
+// PRODUCTOS (lo que se vende)
+// ============================================
+
+model Product {
+  id          Int      @id @default(autoincrement())
+  name        String   // "Batido de Proteína Vainilla", "Desayuno Fitness", "Agua 600ml"
+  description String?
+  price       Float    // precio de venta
+  type        String   // DIRECT | COMPOSITE
+  categoryId  Int
+  imageUrl    String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relaciones
+  category    Category       @relation(fields: [categoryId], references: [id])
+  recipe      RecipeItem[]   // si es COMPOSITE, tiene receta con ingredientes
+  saleItems   SaleItem[]
+  // Si es DIRECT, se vincula a un insumo del inventario
+  inventoryId Int?
+  inventory   Inventory?     @relation(fields: [inventoryId], references: [id])
+
+  @@map("products")
+}
+
+// ============================================
+// INVENTARIO (insumos y productos directos)
+// ============================================
+
+model Inventory {
+  id          Int      @id @default(autoincrement())
+  name        String   // "Whey Protein Vainilla 2kg", "Huevos", "Leche", "Agua 600ml"
+  description String?
+  stock       Float    // cantidad actual (gramos, unidades, ml, etc.)
+  unit        String   // "g" | "ml" | "units" | "scoops"
+  minStock    Float    @default(0) // alerta de stock bajo
+  costPerUnit Float    // costo por unidad de medida (para calcular márgenes)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relaciones
+  recipeItems    RecipeItem[]     // en qué recetas se usa
+  products       Product[]        // productos directos vinculados
+  stockMovements StockMovement[]  // historial de movimientos
+
+  @@map("inventory")
+}
+
+// ============================================
+// RECETAS (composición de productos compuestos)
+// Ej: "Batido Proteína" = 30g proteína + 200ml leche + 1 banana
+// ============================================
+
+model RecipeItem {
+  id          Int   @id @default(autoincrement())
+  productId   Int   // producto compuesto al que pertenece
+  inventoryId Int   // insumo que se usa
+  quantity    Float // cantidad que se usa por unidad de producto
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  inventory Inventory @relation(fields: [inventoryId], references: [id])
+
+  @@unique([productId, inventoryId]) // no duplicar insumo en misma receta
+  @@map("recipe_items")
+}
+
+// ============================================
+// MOVIMIENTOS DE STOCK (trazabilidad)
+// ============================================
+
+model StockMovement {
+  id          Int      @id @default(autoincrement())
+  inventoryId Int
+  type        String   // IN (compra/reposición) | OUT (venta) | ADJUSTMENT (ajuste manual)
+  quantity    Float    // positivo = entrada, negativo = salida
+  reason      String?  // "Venta #45", "Compra proveedor", "Ajuste inventario"
+  createdAt   DateTime @default(now())
+
+  inventory Inventory @relation(fields: [inventoryId], references: [id])
+
+  @@map("stock_movements")
+}
+
+// ============================================
+// MÉTODOS DE PAGO (editables por admin)
+// ============================================
+
+model PaymentMethod {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique // "Efectivo", "Nequi", "Transferencia Bancolombia"
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  salePayments SalePayment[]
+
+  @@map("payment_methods")
+}
+
+// ============================================
+// CAJA REGISTRADORA
+// ============================================
+
+model CashRegister {
+  id            Int       @id @default(autoincrement())
+  openedBy      Int       // usuario que abrió
+  openedAt      DateTime  @default(now())
+  closedAt      DateTime?
+  initialAmount Float     // monto inicial al abrir caja
+  finalAmount   Float?    // monto final al cerrar (conteo real)
+  expectedAmount Float?   // monto esperado (inicial + ventas efectivo - cambios)
+  difference    Float?    // diferencia entre real y esperado (cuadre)
+  notes         String?   // observaciones del cierre
+  status        String    @default("OPEN") // OPEN | CLOSED
+
+  user  User   @relation(fields: [openedBy], references: [id])
+  sales Sale[]
+
+  @@map("cash_registers")
+}
+
+// ============================================
+// VENTAS
+// ============================================
+
+model Sale {
+  id             Int      @id @default(autoincrement())
+  saleNumber     String   @unique // "VTA-0001" autogenerado
+  userId         Int      // quién vendió
+  cashRegisterId Int      // en qué turno de caja
+  subtotal       Float
+  discount       Float    @default(0)
+  total          Float
+  notes          String?
+  createdAt      DateTime @default(now())
+
+  user         User          @relation(fields: [userId], references: [id])
+  cashRegister CashRegister  @relation(fields: [cashRegisterId], references: [id])
+  items        SaleItem[]
+  payments     SalePayment[]
+
+  @@map("sales")
+}
+
+model SaleItem {
+  id        Int   @id @default(autoincrement())
+  saleId    Int
+  productId Int
+  quantity  Int
+  unitPrice Float
+  subtotal  Float
+
+  sale    Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@map("sale_items")
+}
+
+// Pago por venta (una venta puede tener pagos mixtos: parte efectivo, parte Nequi)
+model SalePayment {
+  id              Int   @id @default(autoincrement())
+  saleId          Int
+  paymentMethodId Int
+  amount          Float
+
+  sale          Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  paymentMethod PaymentMethod @relation(fields: [paymentMethodId], references: [id])
+
+  @@map("sale_payments")
+}
